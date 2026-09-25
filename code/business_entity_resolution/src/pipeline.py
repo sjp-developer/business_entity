@@ -24,7 +24,7 @@ from src.submission import generate_submission_files, run_official_validator
 
 def run_pipeline(sample_val_size: int = 50000, sample_train_size: int = 150000):
     """
-    Executes end-to-end Entity Resolution pipeline.
+    Executes end-to-end Entity Resolution pipeline with strict memory management.
     """
     print("==================================================", flush=True)
     print("AMAZON ML CHALLENGE 2026 - ENTITY RESOLUTION PIPELINE", flush=True)
@@ -41,7 +41,7 @@ def run_pipeline(sample_val_size: int = 50000, sample_train_size: int = 150000):
     
     # 2. DATA SPLITTING (S1 Entity Level)
     print("\n--- PHASE 2: S1 ENTITY-LEVEL SPLITTING ---", flush=True)
-    l_train_s1_sub, l_val_s1 = split_s1_train_val(l_train_s1, sample_val_size=sample_val_size, sample_train_size=sample_train_size)
+    l_train_s1_sub, l_val_s1 = split_s1_train_val(l_train_s1, gt_map, sample_val_size=sample_val_size, sample_train_size=sample_train_size)
     
     val_s1_df = l_val_s1.collect()
     train_s1_sub_df = l_train_s1_sub.collect()
@@ -49,8 +49,8 @@ def run_pipeline(sample_val_size: int = 50000, sample_train_size: int = 150000):
     val_s1_ids = val_s1_df["entity_id"].to_list()
     train_s1_ids = train_s1_sub_df["entity_id"].to_list()
     
-    val_gt_map = {sid: gt_map.get(sid, set()) for sid in val_s1_ids}
-    train_gt_map = {sid: gt_map.get(sid, set()) for sid in train_s1_ids}
+    val_gt_map = {sid: gt_map.get(sid, set()) for sid in val_s1_ids if sid in gt_map}
+    train_gt_map = {sid: gt_map.get(sid, set()) for sid in train_s1_ids if sid in gt_map}
     
     val_countries = val_s1_df["country"].unique().to_list()
     train_countries = train_s1_sub_df["country"].unique().to_list()
@@ -65,7 +65,6 @@ def run_pipeline(sample_val_size: int = 50000, sample_train_size: int = 150000):
     print("[Blocking] Generating validation candidate pairs...", flush=True)
     val_cands_df = blocker.generate_candidates(l_val_s1, l_train_s2, l_train_s3, val_countries)
     
-    # Measure Validation Candidate Recall
     val_recalled_pairs = 0
     val_total_gt_pairs = sum(len(s) for s in val_gt_map.values())
     
@@ -76,15 +75,14 @@ def run_pipeline(sample_val_size: int = 50000, sample_train_size: int = 150000):
         val_recalled_pairs += len(true_set.intersection(set(c_list)))
         
     val_blocking_recall = (val_recalled_pairs / val_total_gt_pairs * 100) if val_total_gt_pairs > 0 else 0
-    avg_cands_val = len(val_cands_df) / len(val_s1_ids)
+    avg_cands_val = len(val_cands_df) / max(1, len(val_s1_ids))
     
     print(f"\n[Blocking Benchmark] Validation Candidate Recall: {val_blocking_recall:.2f}% ({val_recalled_pairs}/{val_total_gt_pairs})", flush=True)
     print(f"[Blocking Benchmark] Average Candidates per S1 Entity: {avg_cands_val:.2f}", flush=True)
     
-    # 4. PAIR FEATURE EXTRACTION & HARD NEGATIVE MINING
+    # 4. PAIR FEATURE EXTRACTION & HARD NEGATIVE SAMPLING
     print("\n--- PHASE 4: FEATURE EXTRACTION & HARD NEGATIVE SAMPLING ---", flush=True)
     
-    # Identify positive and negative candidate pairs
     train_s1_arr = train_cands_df["s1_id"].to_list()
     train_cand_arr = train_cands_df["cand_id"].to_list()
     y_raw = np.array([1 if cand_id in train_gt_map.get(s1_id, set()) else 0 for s1_id, cand_id in zip(train_s1_arr, train_cand_arr)], dtype=np.int32)
@@ -104,22 +102,9 @@ def run_pipeline(sample_val_size: int = 50000, sample_train_size: int = 150000):
     
     print(f"[Features] Sampled {len(train_cands_sampled)} training pairs (Positives: {np.sum(y_train == 1)}, Hard Negatives: {np.sum(y_train == 0)}).", flush=True)
     
-    # Materialize text DataFrames for Polars join
-    s1_text_df = pl.concat([val_s1_df, train_s1_sub_df]).select(["entity_id", "business_name", "business_address"]).unique()
-    s23_text_df = pl.concat([
-        l_train_s2.select(["entity_id", "business_name", "business_address"]).collect(),
-        l_train_s3.select(["entity_id", "business_name", "business_address"]).collect(),
-    ])
+    X_train = extract_features_parallel(train_cands_sampled)
     
-    full_train_cands = train_cands_sampled.join(
-        s1_text_df.select([pl.col("entity_id").alias("s1_id"), pl.col("business_name").alias("name1"), pl.col("business_address").alias("addr1")]), on="s1_id"
-    ).join(
-        s23_text_df.select([pl.col("entity_id").alias("cand_id"), pl.col("business_name").alias("name2"), pl.col("business_address").alias("addr2")]), on="cand_id"
-    )
-    
-    X_train = extract_features_parallel(full_train_cands)
-    
-    del train_cands_df, train_cands_sampled, full_train_cands
+    del train_cands_df, train_cands_sampled, train_s1_sub_df
     gc.collect()
     
     # 5. MODEL TRAINING
@@ -138,13 +123,7 @@ def run_pipeline(sample_val_size: int = 50000, sample_train_size: int = 150000):
     
     # 6. VALIDATION & THRESHOLD OPTIMIZATION
     print("\n--- PHASE 6: VALIDATION & F0.5 THRESHOLD OPTIMIZATION ---", flush=True)
-    full_val_cands = val_cands_df.join(
-        s1_text_df.select([pl.col("entity_id").alias("s1_id"), pl.col("business_name").alias("name1"), pl.col("business_address").alias("addr1")]), on="s1_id"
-    ).join(
-        s23_text_df.select([pl.col("entity_id").alias("cand_id"), pl.col("business_name").alias("name2"), pl.col("business_address").alias("addr2")]), on="cand_id"
-    )
-    
-    X_val = extract_features_parallel(full_val_cands)
+    X_val = extract_features_parallel(val_cands_df)
     val_probs = model.predict_proba(X_val)
     
     val_cands_df = val_cands_df.with_columns(pl.Series("score", val_probs))
@@ -176,45 +155,68 @@ def run_pipeline(sample_val_size: int = 50000, sample_train_size: int = 150000):
             f.write("experiment_id,change,candidate_recall,candidate_count,validation_f05,precision,recall,notes\n")
         f.write(f"exp_{int(time.time())},polars_lightgbm_pipeline,{val_blocking_recall:.2f},{avg_cands_val:.2f},{val_results['macro_f05']:.4f},{val_results['macro_precision']:.4f},{val_results['macro_recall']:.4f},validated_on_{len(val_s1_ids)}_s1\n")
         
-    del val_cands_df, full_val_cands, X_val, s1_text_df, s23_text_df
+    # Strictly release all training memory before loading test data
+    del val_cands_df, X_val, val_s1_df, l_train_s1, l_train_s2, l_train_s3, gt_map
     gc.collect()
     
     # 7. TEST INFERENCE & OUTPUT GENERATION
-    print("\n--- PHASE 7: FULL TEST INFERENCE ---", flush=True)
+    print("\n--- PHASE 7: COUNTRY-PARTITIONED STREAMING TEST INFERENCE ---", flush=True)
     l_test_s1 = scan_source_tsv(TEST_S1_PATH)
     l_test_s2 = scan_source_tsv(TEST_S2_PATH)
     l_test_s3 = scan_source_tsv(TEST_S3_PATH)
     
-    test_s1_df = l_test_s1.collect()
-    all_test_s1_ids = test_s1_df["entity_id"].to_list()
-    test_countries = test_s1_df["country"].unique().to_list()
+    all_test_s1_ids = l_test_s1.select("entity_id").collect()["entity_id"].to_list()
+    test_countries = l_test_s1.select("country").unique().collect()["country"].to_list()
     
-    print(f"[Inference] Generating test candidates across countries: {test_countries}...", flush=True)
-    test_cands_df = blocker.generate_candidates(l_test_s1, l_test_s2, l_test_s3, test_countries)
+    test_cands_map = {}
+    test_matches_map = {}
     
-    print("[DataLoader] Joining test text DataFrames...", flush=True)
-    test_s23_text_df = pl.concat([
-        l_test_s2.select(["entity_id", "business_name", "business_address"]).collect(),
-        l_test_s3.select(["entity_id", "business_name", "business_address"]).collect(),
-    ])
+    chunk_size = 30000
     
-    full_test_cands = test_cands_df.join(
-        test_s1_df.select([pl.col("entity_id").alias("s1_id"), pl.col("business_name").alias("name1"), pl.col("business_address").alias("addr1")]), on="s1_id"
-    ).join(
-        test_s23_text_df.select([pl.col("entity_id").alias("cand_id"), pl.col("business_name").alias("name2"), pl.col("business_address").alias("addr2")]), on="cand_id"
-    )
+    from src.blocking import get_lean_blocking_keys
     
-    print(f"[Inference] Extracting features for {len(full_test_cands)} test candidate pairs...", flush=True)
-    X_test = extract_features_parallel(full_test_cands)
-    test_probs = model.predict_proba(X_test)
-    
-    test_cands_df = test_cands_df.with_columns(pl.Series("score", test_probs))
-    
-    test_cand_grouped = test_cands_df.group_by("s1_id").agg(pl.col("cand_id"))
-    test_cands_map = {row[0]: set(row[1]) for row in test_cand_grouped.iter_rows()}
-    
-    test_matches_df = test_cands_df.filter(pl.col("score") >= best_thresh).group_by("s1_id").agg(pl.col("cand_id"))
-    test_matches_map = {row[0]: set(row[1]) for row in test_matches_df.iter_rows()}
+    for c in test_countries:
+        print(f"\n[Test Inference] Processing Country: '{c}'...", flush=True)
+        s2_k = get_lean_blocking_keys(l_test_s2, c).collect()
+        s3_k = get_lean_blocking_keys(l_test_s3, c).collect()
+        s23_k = pl.concat([s2_k, s3_k])
+        del s2_k, s3_k
+        gc.collect()
+        
+        c_s1_lazy = l_test_s1.filter(pl.col("country") == c)
+        n_c_s1 = c_s1_lazy.select(pl.len()).collect().item()
+        print(f"  Country '{c}' total S1 entities: {n_c_s1}, S2/S3 candidates: {len(s23_k)}", flush=True)
+        
+        for offset in range(0, n_c_s1, chunk_size):
+            s1_chunk_lazy = c_s1_lazy.slice(offset, chunk_size)
+            s1_k_chunk = get_lean_blocking_keys(s1_chunk_lazy, c).collect()
+            print(f"  [Chunk {offset//chunk_size + 1}] Processing entities {offset} to {min(offset+chunk_size, n_c_s1)}...", flush=True)
+            
+            chunk_cands_df = blocker.generate_candidates_from_keys(s1_k_chunk, s23_k)
+            del s1_k_chunk
+            gc.collect()
+            
+            if len(chunk_cands_df) == 0:
+                continue
+                
+            X_chunk = extract_features_parallel(chunk_cands_df)
+            chunk_probs = model.predict_proba(X_chunk)
+            
+            chunk_scored = chunk_cands_df.select(["s1_id", "cand_id"]).with_columns(pl.Series("score", chunk_probs))
+            chunk_grouped = chunk_scored.group_by("s1_id").agg([pl.col("cand_id"), pl.col("score")])
+            
+            for row in chunk_grouped.iter_rows():
+                s1_i, cand_ids, scores = row[0], row[1], row[2]
+                test_cands_map[s1_i] = set(cand_ids)
+                match_set = {cid for cid, sc in zip(cand_ids, scores) if sc >= best_thresh}
+                if match_set:
+                    test_matches_map[s1_i] = match_set
+                    
+            del chunk_cands_df, X_chunk, chunk_probs, chunk_scored, chunk_grouped
+            gc.collect()
+            
+        del s23_k
+        gc.collect()
     
     # 8. SUBMISSION & OFFICIAL VALIDATOR
     print("\n--- PHASE 8: OFFICIAL SUBMISSION VALIDATION ---", flush=True)

@@ -1,0 +1,7 @@
+experiment_id,change,candidate_recall,candidate_count,validation_f05,precision,recall,notes
+exp_1790318751,polars_lightgbm_pipeline,72.03,83.29,0.0557,0.0557,0.0557,validated_on_50000_s1
+exp_1790320109,polars_lightgbm_pipeline,72.03,83.29,0.0557,0.0557,0.0557,validated_on_50000_s1
+exp_1790320394,polars_lightgbm_pipeline,72.03,83.29,0.0557,0.0557,0.0557,validated_on_50000_s1
+exp_1790320823,polars_lightgbm_pipeline,71.91,85.00,0.7354,0.8008,0.6334,validated_on_15000_s1
+exp_1790324942,polars_lightgbm_pipeline,71.91,85.00,0.7324,0.7968,0.6332,validated_on_15000_s1
+exp_1790326014,polars_lightgbm_pipeline,71.91,85.00,0.7338,0.7986,0.6327,validated_on_15000_s1

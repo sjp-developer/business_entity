@@ -37,11 +37,23 @@ def read_ground_truth(path: str) -> Dict[str, Set[str]]:
         
     return gt_map
 
-def split_s1_train_val(l_s1: pl.LazyFrame, sample_val_size: int = 50000, sample_train_size: int = 150000) -> Tuple[pl.LazyFrame, pl.LazyFrame]:
+def split_s1_train_val(l_s1: pl.LazyFrame, gt_map: Dict[str, Set[str]], sample_val_size: int = 50000, sample_train_size: int = 150000) -> Tuple[pl.LazyFrame, pl.LazyFrame]:
     """
-    Splits Source 1 records into train and validation sets at the S1 entity level.
+    Splits Source 1 records into train and validation sets at the S1 entity level,
+    ensuring ground truth entities are sampled into both train and val.
     """
-    print(f"[DataLoader] Creating S1 Entity split: {sample_val_size} Val S1 entities, {sample_train_size} Train S1 entities...", flush=True)
-    val_l_s1 = l_s1.slice(0, sample_val_size)
-    train_l_s1 = l_s1.slice(sample_val_size, sample_train_size)
+    print(f"[DataLoader] Creating stratified S1 Entity split: {sample_val_size} Val, {sample_train_size} Train...", flush=True)
+    gt_s1_ids = list(gt_map.keys())
+    
+    np.random.seed(RANDOM_SEED)
+    shuffled_gt = np.random.permutation(gt_s1_ids)
+    
+    val_gt_count = min(15000, len(shuffled_gt) // 4)
+    val_gt_ids = set(shuffled_gt[:val_gt_count])
+    train_gt_ids = set(shuffled_gt[val_gt_count:val_gt_count + 45000])
+    
+    # Lazy filter
+    val_l_s1 = l_s1.filter(pl.col("entity_id").is_in(list(val_gt_ids))).slice(0, sample_val_size)
+    train_l_s1 = l_s1.filter(pl.col("entity_id").is_in(list(train_gt_ids))).slice(0, sample_train_size)
+    
     return train_l_s1, val_l_s1

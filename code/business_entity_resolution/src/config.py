@@ -37,4 +37,4 @@ RANDOM_SEED = 42
 N_JOBS = -1
 
 # Legal Regex Pattern
-LEGAL_RE = r"(?i)\b(inc|incorporated|corp|corporation|ltd|limited|pvt|private|llc|co|company|group|services|solutions|technologies|trust|associates|gmbh|sa|sarl|sas|eurl|spa|bv|nv|pte|plc)\b"
+LEGAL_RE = r"(?i)\b(inc|incorporated|corp|corporation|ltd|limited|pvt|private|llc|co|company|group|services|solutions|technologies|trust|associates|gmbh|sa|sarl|sas|eurl|spa|bv|nv|pte|plc|societe|etablissements|association|entreprise|cabinet|le|la|les|du|des)\b"
