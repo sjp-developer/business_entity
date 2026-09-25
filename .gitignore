@@ -1,0 +1,25 @@
+# Byte-compiled / Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Dataset raw files (exclude large 3.5GB TSVs from Git tracking)
+student_resource/dataset/train/*.tsv
+student_resource/dataset/test/*.tsv
+!student_resource/dataset/train/.gitkeep
+!student_resource/dataset/test/.gitkeep
+
+# Environments & IDE
+.env
+.venv
+env/
+venv/
+ENV/
+.idea/
+.vscode/
+.DS_Store
+
+# Temporary scratch & log files
+scratch/
+experiments/*.log
